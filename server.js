@@ -3,7 +3,7 @@ import { createServer } from 'https';
 import { readFileSync } from 'fs';
 import next from 'next';
 
-const port = 3001;
+const port = 3400;
 const hostname = '192.168.100.99';
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev, hostname, port });
