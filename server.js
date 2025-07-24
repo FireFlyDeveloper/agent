@@ -1,7 +1,7 @@
 // server.js
-const { createServer } = require('https');
-const { readFileSync } = require('fs');
-const next = require('next');
+import { createServer } from 'https';
+import { readFileSync } from 'fs';
+import next from 'next';
 
 const port = 3001;
 const hostname = '192.168.100.99';
