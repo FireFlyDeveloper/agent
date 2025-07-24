@@ -4,7 +4,8 @@ import React, { useEffect, useRef, useState } from 'react';
 
 const MicStream = () => {
   const wsRef = useRef(null);
-  const audioContextRef = useRef(null);
+  const micAudioCtxRef = useRef(null);
+  const playAudioCtxRef = useRef(null);
   const workletNodeRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const maxReconnectAttempts = 5;
@@ -14,9 +15,12 @@ const MicStream = () => {
   // UI States
   const [isListening, setIsListening] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [assistantMessage, setAssistantMessage] = useState("Hi, I'm Ani. Click below to start!");
+  const [assistantMessage, setAssistantMessage] = useState("Ani is resting...");
   const [isProcessing, setIsProcessing] = useState(false);
-  const [pulseAnimation, setPulseAnimation] = useState(false);
+  const [liquidAnim, setLiquidAnim] = useState(false);
+  const [orbScale, setOrbScale] = useState(1);
+  const [orbColor, setOrbColor] = useState('bg-white/10');
+  const [messageOpacity, setMessageOpacity] = useState(0);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -28,84 +32,120 @@ const MicStream = () => {
 
   const cleanup = () => {
     if (wsRef.current) wsRef.current.close();
-    if (audioContextRef.current) audioContextRef.current.close();
+    if (micAudioCtxRef.current) micAudioCtxRef.current.close();
+    if (playAudioCtxRef.current) playAudioCtxRef.current.close();
     setIsConnected(false);
     setIsListening(false);
   };
 
+  const animateStateChange = (newMessage, newColor, newScale, isLiquid) => {
+    setMessageOpacity(0);
+    setTimeout(() => {
+      if (!isMountedRef.current) return;
+      setAssistantMessage(newMessage);
+      setOrbColor(newColor);
+      setLiquidAnim(isLiquid);
+      setOrbScale(newScale * 0.95);
+      setTimeout(() => {
+        if (isMountedRef.current) setOrbScale(newScale);
+      }, 150);
+      setTimeout(() => {
+        if (isMountedRef.current) setMessageOpacity(1);
+      }, 100);
+    }, 200);
+  };
+
   const setupWebSocket = () => {
     if (!isMountedRef.current) return;
-
-    wsRef.current = new WebSocket('wss://192.168.100.99:3000/ws');
+    wsRef.current = new WebSocket('wss://192.168.100.99:3300/ws');
+    
+    wsRef.current.binaryType = 'arraybuffer';
 
     wsRef.current.onopen = () => {
-      console.log('WebSocket connected');
       setIsConnected(true);
       reconnectAttemptRef.current = 0;
-      setAssistantMessage("Connected! Say 'Hey Ani' to wake me up.");
+      animateStateChange("Ani is ready...", 'bg-white/10', 1, false);
     };
 
-    wsRef.current.onclose = (event) => {
-      console.log('WebSocket disconnected:', event.code, event.reason);
+    wsRef.current.onclose = () => {
       setIsConnected(false);
       setIsListening(false);
       if (reconnectAttemptRef.current < maxReconnectAttempts) {
-        reconnectAttemptRef.current += 1;
-        setAssistantMessage(`Reconnecting... (${reconnectAttemptRef.current}/${maxReconnectAttempts})`);
+        reconnectAttemptRef.current++;
+        animateStateChange("Reconnecting...", 'bg-gray-900/30', 1, false);
         setTimeout(setupWebSocket, reconnectDelay);
       } else {
-        setAssistantMessage("Connection failed. Please try again later.");
+        animateStateChange("Ani disconnected", 'bg-gray-900/30', 1, false);
       }
     };
 
-    wsRef.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setAssistantMessage("Connection error. Trying to reconnect...");
+    wsRef.current.onerror = () => {
+      animateStateChange("Connection error", 'bg-gray-900/30', 1, false);
     };
 
-    wsRef.current.onmessage = (event) => {
-      const message = event.data;
-      console.log('Received:', message);
-      
-      if (message === "DETECTED") {
-        setIsListening(true);
-        setPulseAnimation(true);
-        setAssistantMessage("I'm listening... How can I help?");
-      } 
-      else if (message === "STOPPED") {
-        setIsListening(false);
-        setPulseAnimation(false);
-        setIsProcessing(true);
-        setAssistantMessage("Processing your request...");
-        
-        // Simulate processing completion after 2 seconds
-        setTimeout(() => {
-          if (isMountedRef.current) {
-            setIsProcessing(false);
-            setAssistantMessage("Ready for your next request. Say 'Hey Ani' again.");
-          }
-        }, 2000);
+    wsRef.current.onmessage = async (event) => {
+      if (typeof event.data === 'string') {
+        // Text messages: DETECTED, STOPPED, TRANSCRIPT...
+        const msg = event.data;
+        if (msg === "DETECTED") {
+          setIsListening(true);
+          animateStateChange("Ani is listening...", 'bg-cyan-400/20', 1.05, true);
+        } else if (msg === "STOPPED") {
+          setIsListening(false);
+          animateStateChange("Ani is thinking...", 'bg-purple-400/20', 1.02, false);
+          setIsProcessing(true);
+          // reset UI after a moment
+          setTimeout(() => {
+            if (isMountedRef.current) {
+              setIsProcessing(false);
+              animateStateChange("Ani is ready...", 'bg-white/10', 1, false);
+            }
+          }, 2000);
+        } else if (msg.startsWith("TRANSCRIPT: ")) {
+          // you might display it if needed
+          // const text = msg.replace("TRANSCRIPT: ", "");
+        } else if (msg === "NO_TRANSCRIPT") {
+          // handle no-transcript...
+        }
+      } else {
+        // Binary audio frame (raw PCM int16 @ 24000 Hz)
+        const arrayBuffer = event.data;
+        const int16 = new Int16Array(arrayBuffer);
+        // convert to float32 in [-1,1]
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) {
+          float32[i] = int16[i] / 32768;
+        }
+        // create or reuse playback context
+        const playCtx = playAudioCtxRef.current
+          ?? new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        playAudioCtxRef.current = playCtx;
+
+        // build AudioBuffer
+        const buffer = playCtx.createBuffer(1, float32.length, 24000);
+        buffer.copyToChannel(float32, 0, 0);
+
+        // play it
+        const src = playCtx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(playCtx.destination);
+        src.start();
       }
     };
   };
 
   const startStreaming = async () => {
     try {
-      if (isConnected && isListening) {
-        setAssistantMessage("Already listening...");
-        return;
-      }
-
-      setAssistantMessage("Initializing...");
+      if (isConnected && isListening) return;
+      animateStateChange("Ani waking up...", 'bg-amber-400/20', 1.03, false);
       setupWebSocket();
       
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+      // setup mic capture
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: 16000
       });
-      audioContextRef.current = audioContext;
-      
-      await audioContext.audioWorklet.addModule('/audioProcessor.js');
-      
+      micAudioCtxRef.current = audioCtx;
+      await audioCtx.audioWorklet.addModule('/audioProcessor.js');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 16000,
@@ -115,107 +155,119 @@ const MicStream = () => {
           autoGainControl: false
         }
       });
-      
-      const source = audioContext.createMediaStreamSource(stream);
-      const workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+      const source = audioCtx.createMediaStreamSource(stream);
+      const workletNode = new AudioWorkletNode(audioCtx, 'audio-processor');
       workletNodeRef.current = workletNode;
-      
-      workletNode.port.onmessage = (event) => {
+      workletNode.port.onmessage = (e) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(event.data);
+          wsRef.current.send(e.data);
         }
       };
-      
       source.connect(workletNode);
-      workletNode.connect(audioContext.destination);
-      
-      setAssistantMessage("Ready! Say 'Hey Ani' to wake me up.");
+      workletNode.connect(audioCtx.destination);
     } catch (error) {
-      console.error('Error:', error);
-      setAssistantMessage("Error initializing microphone. Please check permissions.");
+      animateStateChange("Mic error", 'bg-red-400/20', 1, false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-purple-800 flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white/10 backdrop-blur-lg rounded-3xl shadow-xl overflow-hidden border border-white/20">
-        {/* Assistant Header */}
-        <div className="bg-black/20 p-6 flex items-center space-x-4 border-b border-white/10">
-          <div className={`relative ${pulseAnimation ? 'animate-pulse' : ''}`}>
-            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-              </svg>
-            </div>
-            {isListening && (
-              <div className="absolute -inset-1 rounded-full border-2 border-cyan-300 animate-ping opacity-75"></div>
-            )}
-          </div>
-          <div>
-            <h2 className="text-xl font-bold text-white">Ani</h2>
-            <p className="text-sm text-white/80">Your Personal Virtual Assistant</p>
-          </div>
-        </div>
+    <div className="fixed inset-0 flex items-center justify-center z-50">
+      {/* Liquid Orb Container */}
+      <div 
+        className={`relative w-32 h-32 rounded-full border backdrop-blur-lg shadow-lg transition-all duration-300 ${
+          isConnected ? 'border-cyan-400/50' : 'border-gray-600/30'
+        } ${liquidAnim ? 'animate-liquid' : ''}`}
+        onClick={startStreaming}
+        style={{
+          transform: `scale(${orbScale})`,
+          background: isConnected ? 'radial-gradient(circle, rgba(16,24,39,0.3) 0%, rgba(6,182,212,0.1) 100%)' : 'radial-gradient(circle, rgba(16,24,39,0.3) 0%, rgba(75,85,99,0.1) 100%)'
+        }}
+      >
+        {/* Liquid Animation Elements */}
+        {liquidAnim && (
+          <>
+            <div className="absolute top-1/4 left-1/4 w-8 h-8 bg-cyan-400/40 rounded-full animate-liquid-move-1 transition-all duration-700"></div>
+            <div className="absolute bottom-1/3 right-1/3 w-6 h-6 bg-cyan-300/30 rounded-full animate-liquid-move-2 transition-all duration-700"></div>
+            <div className="absolute top-1/3 right-1/4 w-5 h-5 bg-cyan-200/20 rounded-full animate-liquid-move-3 transition-all duration-700"></div>
+          </>
+        )}
 
-        {/* Assistant Status */}
-        <div className="p-6 space-y-4">
-          <div className="flex items-center space-x-2">
-            <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></div>
-            <span className="text-sm text-white/80">
-              {isConnected ? 'Connected' : 'Disconnected'}
-            </span>
-          </div>
-
-          {/* Assistant Message Bubble */}
-          <div className="bg-black/20 rounded-2xl p-4 min-h-20 flex items-center">
-            <p className="text-white">
-              {isProcessing ? (
-                <span className="flex items-center space-x-2">
-                  <span className="inline-block w-2 h-2 bg-white rounded-full animate-bounce"></span>
-                  <span className="inline-block w-2 h-2 bg-white rounded-full animate-bounce delay-100"></span>
-                  <span className="inline-block w-2 h-2 bg-white rounded-full animate-bounce delay-200"></span>
-                </span>
-              ) : (
-                assistantMessage
-              )}
-            </p>
-          </div>
-
-          {/* Mic Button */}
-          <button
-            onClick={startStreaming}
-            disabled={isProcessing}
-            className={`w-full py-3 px-4 rounded-xl flex items-center justify-center space-x-2 transition-all duration-300 ${
+        {/* Core Orb */}
+        <div className={`absolute inset-6 rounded-full flex items-center justify-center transition-all duration-500 ${orbColor}`}>
+          <svg 
+            xmlns="http://www.w3.org/2000/svg" 
+            className={`h-10 w-10 transition-all duration-300 ${
               isListening 
-                ? 'bg-red-500 hover:bg-red-600 text-white'
-                : isConnected 
-                  ? 'bg-cyan-600 hover:bg-cyan-700 text-white'
-                  : 'bg-gray-500 cursor-not-allowed text-white/50'
-            } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                ? 'text-cyan-300 scale-110' 
+                : isProcessing 
+                  ? 'text-purple-300 scale-105' 
+                  : 'text-white/80 scale-100'
+            }`}
+            fill="none" 
+            viewBox="0 0 24 24" 
+            stroke="currentColor"
           >
-            {isListening ? (
-              <>
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
-                </svg>
-                <span>Listening... (Click to stop)</span>
-              </>
-            ) : (
-              <>
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
-                </svg>
-                <span>{isConnected ? 'Start Listening' : 'Connect'}</span>
-              </>
-            )}
-          </button>
+            <path 
+              strokeLinecap="round" 
+              strokeLinejoin="round" 
+              strokeWidth={isListening ? 2 : (isProcessing ? 1.8 : 1.5)} 
+              d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" 
+            />
+          </svg>
         </div>
 
-        {/* Footer */}
-        <div className="bg-black/20 p-3 text-center text-xs text-white/50 border-t border-white/10">
-          Ani Assistant v1.0 • Managing your work, school, and schedules
+        {/* Status Pulse */}
+        {isConnected && (
+          <div className={`absolute inset-0 rounded-full border ${
+            isListening 
+              ? 'border-cyan-300/60' 
+              : isProcessing 
+                ? 'border-purple-300/50' 
+                : 'border-cyan-500/30'
+          } animate-ping opacity-0 transition-all duration-700`}></div>
+        )}
+
+        {/* Message Bubble */}
+        <div 
+          className={`absolute bottom-full left-1/2 transform -translate-x-1/2 mb-3 px-4 py-2 rounded-lg bg-black/80 backdrop-blur-sm text-white text-center text-sm max-w-xs transition-all duration-300`}
+          style={{ opacity: messageOpacity }}
+        >
+          {assistantMessage}
+          <div className="absolute bottom-0 left-1/2 w-3 h-3 bg-black/80 transform rotate-45 -mb-1 -translate-x-1/2 transition-all duration-300"></div>
         </div>
       </div>
+
+      {/* Custom Animations */}
+      <style jsx>{`
+        @keyframes liquid {
+          0%, 100% { border-radius: 60% 40% 30% 70%/60% 30% 70% 40%; }
+          50% { border-radius: 30% 60% 70% 40%/50% 60% 30% 60%; }
+        }
+        @keyframes liquid-move-1 {
+          0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.6; }
+          50% { transform: translate(10px, 5px) scale(1.1); opacity: 0.9; }
+        }
+        @keyframes liquid-move-2 {
+          0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.4; }
+          50% { transform: translate(-5px, 8px) scale(1.05); opacity: 0.7; }
+        }
+        @keyframes liquid-move-3 {
+          0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.3; }
+          50% { transform: translate(5px, -5px) scale(1.03); opacity: 0.5; }
+        }
+        .animate-liquid {
+          animation: liquid 8s ease-in-out infinite;
+        }
+        .animate-liquid-move-1 {
+          animation: liquid-move-1 7s ease-in-out infinite;
+        }
+        .animate-liquid-move-2 {
+          animation: liquid-move-2 5s ease-in-out infinite;
+        }
+        .animate-liquid-move-3 {
+          animation: liquid-move-3 6s ease-in-out infinite;
+        }
+      `}</style>
     </div>
   );
 };
